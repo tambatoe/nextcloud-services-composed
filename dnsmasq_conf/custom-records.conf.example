@@ -1,0 +1,6 @@
+# Esempio di configurazione DNS personalizzata aggiuntiva per dnsmasq
+# Rinomina questo file in 'custom-records.conf' per attivarlo.
+
+# Esempio: reindirizzare un dominio interno a un IP specifico
+# address=/prometheus.vpn.local/10.8.0.1
+# address=/grafana.vpn.local/10.8.0.1

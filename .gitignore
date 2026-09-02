@@ -1,0 +1,66 @@
+##################################
+# Segreti e credenziali - MAI committare
+##################################
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.crt
+*.ovpn
+*.p12
+
+##################################
+# Dati persistenti dei container
+##################################
+db_data/*
+!db_data/.gitkeep
+
+nextcloud_html/*
+!nextcloud_html/.gitkeep
+
+nextcloud_data/*
+!nextcloud_data/.gitkeep
+
+vaultwarden_data/*
+!vaultwarden_data/.gitkeep
+
+backups/*
+!backups/.gitkeep
+
+gdrive_sync/*
+!gdrive_sync/.gitkeep
+
+##################################
+# Credenziali esterne e dump
+##################################
+rclone/*
+!rclone/.gitkeep
+nextcloud_db.sql
+olds/
+
+##################################
+# Certificati OpenVPN e log
+##################################
+openvpn_keys/server/*
+!openvpn_keys/server/.gitkeep
+openvpn_keys/client/*
+!openvpn_keys/client/.gitkeep
+openvpn_keys/easy-rsa/
+openvpn_keys/easy-rsa-pki/
+openvpn_keys/*.log
+openvpn_keys/openvpn.conf
+openvpn_keys/up.sh
+openvpn_keys/down.sh
+openvpn_keys/update-resolv-conf
+
+##################################
+# OS / Editor / Log
+##################################
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log

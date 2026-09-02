@@ -1,0 +1,203 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Database MariaDB
+  # Inizializzazione automatica e pulita al primo avvio (senza dump legacy)
+  # ---------------------------------------------------------------------------
+  db:
+    image: mariadb:10.11
+    container_name: infra_db
+    restart: always
+    networks:
+      - internal_net
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ./db_data:/var/lib/mysql
+
+  # ---------------------------------------------------------------------------
+  # Nextcloud
+  # Supporto nativo per reverse proxy HTTPS e cartella sync Google Drive
+  # ---------------------------------------------------------------------------
+  nextcloud:
+    image: nextcloud:34.0.3-apache
+    container_name: infra_nextcloud
+    restart: always
+    networks:
+      - internal_net
+    ports:
+      - "127.0.0.1:${NEXTCLOUD_PORT:-8080}:80"
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_DATA_DIR: /var/www/html/data
+      NEXTCLOUD_TRUSTED_DOMAINS: "${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local} 127.0.0.1 ${VPN_SERVER_IP:-10.8.0.1}"
+      TRUSTED_PROXIES: "127.0.0.1 ${VPN_SUBNET:-10.8.0.0}/24 172.16.0.0/12"
+      OVERWRITEHOST: "${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local}"
+      OVERWRITEPROTOCOL: "https"
+      OVERWRITECLIURL: "https://${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local}"
+    volumes:
+      - ./nextcloud_html:/var/www/html
+      - ${PATH_NEXTCLOUD_DATA:-./nextcloud_data}:/var/www/html/data
+      - ${PATH_GDRIVE_SYNC:-./gdrive_sync}:/gdrive-sync
+    depends_on:
+      - db
+
+  # ---------------------------------------------------------------------------
+  # Vaultwarden (Server Bitwarden-compatibile)
+  # ---------------------------------------------------------------------------
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: infra_vaultwarden
+    restart: always
+    networks:
+      - internal_net
+    ports:
+      - "127.0.0.1:${VAULTWARDEN_PORT:-8081}:80"
+    environment:
+      DOMAIN: "https://${VAULTWARDEN_DOMAIN:-vault.vpn.local}"
+      SIGNUPS_ALLOWED: "${SIGNUPS_ALLOWED:-true}"
+      WEBSOCKET_ENABLED: "true"
+      ADMIN_TOKEN: ${VAULTWARDEN_ADMIN_TOKEN}
+    volumes:
+      - ${PATH_VAULTWARDEN_DATA:-./vaultwarden_data}:/data
+
+  # ---------------------------------------------------------------------------
+  # Dnsmasq (DNS interno per la rete VPN)
+  # Genera la configurazione direttamente dalle variabili d'ambiente in .env
+  # ---------------------------------------------------------------------------
+  dnsmasq:
+    image: alpine:3.19
+    container_name: infra_dnsmasq
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      VPN_DOMAIN: ${VPN_DOMAIN:-vpn.local}
+      VPN_SERVER_IP: ${VPN_SERVER_IP:-10.8.0.1}
+      NEXTCLOUD_DOMAIN: ${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local}
+      VAULTWARDEN_DOMAIN: ${VAULTWARDEN_DOMAIN:-vault.vpn.local}
+    volumes:
+      - ${PATH_DNSMASQ_CONF:-./dnsmasq_conf}:/etc/dnsmasq.d:ro
+    command: >
+      sh -c "apk add --no-cache dnsmasq &&
+             mkdir -p /etc/dnsmasq.d &&
+             cat << 'EOF' > /tmp/dnsmasq.conf
+      # Configurazione generata automaticamente dalle variabili .env
+      interface=tun0
+      listen-address=$${VPN_SERVER_IP:-10.8.0.1}
+      listen-address=127.0.0.1
+      bind-interfaces
+      no-dhcp-interface=
+      no-resolv
+      server=1.1.1.1
+      server=8.8.8.8
+      domain-needed
+      bogus-priv
+      local=/$${VPN_DOMAIN:-vpn.local}/
+      domain=$${VPN_DOMAIN:-vpn.local}
+      address=/$${VPN_DOMAIN:-vpn.local}/$${VPN_SERVER_IP:-10.8.0.1}
+      address=/$${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local}/$${VPN_SERVER_IP:-10.8.0.1}
+      address=/$${VAULTWARDEN_DOMAIN:-vault.vpn.local}/$${VPN_SERVER_IP:-10.8.0.1}
+      conf-dir=/etc/dnsmasq.d/,.conf
+      EOF
+             dnsmasq --keep-in-foreground --no-daemon --conf-file=/tmp/dnsmasq.conf"
+
+  # ---------------------------------------------------------------------------
+  # OpenVPN
+  # Rilevamento dinamico interfaccia di rete per NAT/MASQUERADE
+  # ---------------------------------------------------------------------------
+  openvpn:
+    image: alpine:3.19
+    container_name: infra_openvpn
+    restart: always
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ${PATH_OPENVPN_KEYS:-./openvpn_keys}:/etc/openvpn
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    command: >
+      sh -c "apk add --no-cache openvpn iptables &&
+             DEFAULT_IF=\$$(ip route show default 2>/dev/null | awk '/default/ {print \$$5; exit}') &&
+             DEFAULT_IF=\$${DEFAULT_IF:-eth0} &&
+             iptables -t nat -C POSTROUTING -s ${VPN_SUBNET:-10.8.0.0}/24 -o \$$DEFAULT_IF -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${VPN_SUBNET:-10.8.0.0}/24 -o \$$DEFAULT_IF -j MASQUERADE &&
+             openvpn --config /etc/openvpn/openvpn.conf"
+
+  # ---------------------------------------------------------------------------
+  # Caddy Reverse Proxy
+  # Gestione TLS locale per i domini configurati
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:latest
+    container_name: infra_caddy
+    restart: always
+    network_mode: host
+    environment:
+      NEXTCLOUD_DOMAIN: ${NEXTCLOUD_DOMAIN:-nextcloud.vpn.local}
+      VAULTWARDEN_DOMAIN: ${VAULTWARDEN_DOMAIN:-vault.vpn.local}
+      NEXTCLOUD_PORT: ${NEXTCLOUD_PORT:-8080}
+      VAULTWARDEN_PORT: ${VAULTWARDEN_PORT:-8081}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - nextcloud
+      - vaultwarden
+
+  # ---------------------------------------------------------------------------
+  # Infra Tools: Backup periodico e opzionale sync Google Drive (rclone)
+  # ---------------------------------------------------------------------------
+  infra-tools:
+    build:
+      context: ./infra-tools
+      dockerfile: Dockerfile
+    container_name: infra_tools
+    restart: always
+    networks:
+      - internal_net
+    environment:
+      MYSQL_HOST: db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_UPLOAD_TO_DRIVE: "${BACKUP_UPLOAD_TO_DRIVE:-false}"
+      BACKUP_GPG_PASSPHRASE: ${BACKUP_GPG_PASSPHRASE}
+      RCLONE_REMOTE: ${RCLONE_REMOTE:-gdrive}
+      RCLONE_REMOTE_FOLDER: "${RCLONE_REMOTE_FOLDER:-}"
+      RCLONE_BACKUP_PATH: ${RCLONE_BACKUP_PATH:-infra-backups}
+      NEXTCLOUD_UID: 33
+      NEXTCLOUD_GID: 33
+    volumes:
+      - ./rclone:/config/rclone:ro
+      - ${PATH_VAULTWARDEN_DATA:-./vaultwarden_data}:/backup_sources/vaultwarden_data:ro
+      - ./nextcloud_html/config:/backup_sources/nextcloud_config:ro
+      - ${PATH_OPENVPN_KEYS:-./openvpn_keys}:/backup_sources/openvpn:ro
+      - ${PATH_DNSMASQ_CONF:-./dnsmasq_conf}:/backup_sources/dnsmasq:ro
+      - ./Caddyfile:/backup_sources/Caddyfile:ro
+      - ./.env:/backup_sources/env_file:ro
+      - ${PATH_GDRIVE_SYNC:-./gdrive_sync}:/gdrive-sync
+      - ${PATH_BACKUPS:-./backups}:/backups
+    depends_on:
+      - db
+      - nextcloud
+      - vaultwarden
+
+networks:
+  internal_net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
