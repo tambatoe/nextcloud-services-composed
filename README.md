@@ -32,6 +32,24 @@ Stack self-hosted e standalone basato su Docker Compose per ospitare i propri se
 
 ---
 
+## Configurazione Firewall e Rete (VPS / VM)
+
+Essendo un'architettura progettata per la massima sicurezza, **i servizi interni (Nextcloud, Vaultwarden) non devono mai essere esposti direttamente su Internet**. L'unico punto di ingresso è la VPN. 
+
+Devi assicurarti che il firewall del tuo sistema operativo (es. `ufw` o `iptables`) e, **cosa fondamentale**, il firewall esterno fornito dal tuo provider Cloud (nella loro dashboard web) abbiano le seguenti regole:
+
+| Porta | Protocollo | Azione | Motivo |
+|---|---|---|---|
+| **1194** | **UDP** | 🟢 **APRIRE** | Porta di accesso per OpenVPN (il valore è personalizzabile in `.env`) |
+| **22** | TCP | 🟢 **APRIRE** | SSH (Necessaria per non tagliarti fuori dall'amministrazione del server!) |
+| **80 / 443** | TCP | 🔴 **BLOCCARE** | Caddy e interfacce web (accessibili solo dall'interno della VPN) |
+| **8080 / 8081** | TCP | 🔴 **BLOCCARE** | Porte locali di bind per Nextcloud e Vaultwarden |
+| **53** | UDP / TCP | 🔴 **BLOCCARE** | dnsmasq (bloccarla all'esterno evita di subire attacchi di DNS Amplification) |
+
+> ⚠️ **MOLTO IMPORTANTE:** Configurare queste regole tramite riga di comando sul server (es. con `ufw`) a volte non è sufficiente. **Devi accedere all'interfaccia web della tua VPS / Virtual Machine fornita dal provider** (es. pannello di controllo AWS, Hetzner, Aruba, OVH, Oracle Cloud, ecc.) e verificare che il loro "Security Group" o "Cloud Firewall" permetta esplicitamente il traffico in ingresso sulla porta **UDP 1194**. Se questa porta è bloccata a monte, il client VPN non riuscirà mai a connettersi.
+
+---
+
 ## Installazione Rapida da Zero
 
 ### 1. Inizializzazione automatica dell'ambiente
@@ -115,6 +133,26 @@ Se `rclone.conf` non è presente, `infra-tools` continuerà regolarmente a crear
 
 ---
 
+## Backup e Ripristino Completo (Cold)
+
+Oltre al backup automatico in background descritto sopra, sono disponibili due script per eseguire un salvataggio o un ripristino integrale dell'infrastruttura (inclusi i file personali salvati su Nextcloud). Poiché questi file possono essere molto pesanti, il backup completo viene effettuato "a freddo", fermando temporaneamente i servizi per garantire l'assoluta integrità dei dati e del database.
+
+### Eseguire un backup offline
+Per creare un archivio `tar.gz` completo dell'intera directory di progetto (ideale prima di un aggiornamento o per migrare server):
+```bash
+./scripts/backup-full.sh
+```
+I container verranno messi in pausa, verrà generato l'archivio nella cartella `backups/` e poi i servizi ripartiranno da soli.
+
+### Ripristinare un backup offline
+Se stai spostando l'infrastruttura su una nuova VPS o vuoi recuperare un disastro, clona la repository (se necessario), procurati l'archivio `tar.gz` ed esegui lo script di ripristino passandogli il percorso del file. **Attenzione: questo comando andrà a sovrascrivere l'infrastruttura corrente!**
+```bash
+./scripts/restore-full.sh ./backups/nome_archivio.tar.gz
+```
+Lo script si occuperà di spegnere i container, estrarre i file rimpiazzando lo stato attuale, e riavviare l'ambiente.
+
+---
+
 ## Struttura della Repository
 
 ```
@@ -126,6 +164,8 @@ Se `rclone.conf` non è presente, `infra-tools` continuerà regolarmente a crear
 ├── scripts/
 │   ├── setup.sh             # Inizializzazione automatica dell'infrastruttura
 │   ├── init-vpn.sh          # Generatore PKI e profili client OpenVPN
+│   ├── backup-full.sh       # Script per il backup completo offline
+│   ├── restore-full.sh      # Script per il ripristino da backup offline
 │   └── legacy-switch-from-baremetal.sh
 ├── infra-tools/             # Container per backup programmato e sync Drive
 │   ├── Dockerfile
