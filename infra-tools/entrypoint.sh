@@ -17,7 +17,7 @@ cat << 'EOF' > /etc/crontabs/root
 0 3 * * * /app/backup.sh >> /var/log/backup.log 2>&1
 
 # Sincronizzazione /gdrive-sync su Drive ogni 15 minuti (se rclone.conf presente)
-*/15 * * * * [ -f /config/rclone/rclone.conf ] && rclone --config /config/rclone/rclone.conf sync /gdrive-sync "${RCLONE_REMOTE:-gdrive}:${RCLONE_REMOTE_FOLDER:-}" >> /var/log/rclone.log 2>&1
+*/3 * * * * [ -f /config/rclone/rclone.conf ] && rclone --config /config/rclone/rclone.conf bisync /gdrive-sync "${RCLONE_REMOTE:-gdrive}:${RCLONE_REMOTE_FOLDER:-}" --resync-mode update >> /var/log/rclone.log 2>&1
 EOF
 
 echo "[INFO] Pianificatore cron configurato (backup giornaliero alle 03:00)."
